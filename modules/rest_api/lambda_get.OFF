@@ -1,0 +1,91 @@
+data "archive_file" "lambda_get_templates" {
+  type = "zip"
+
+  source_dir  = "${path.module}/src/functions_rest/get_templates"
+  output_path = "${path.module}/src/functions_rest/get_templates.zip"
+}
+
+resource "aws_s3_object" "lambda_get_templates" {
+  bucket = var.s3_lambda_rest_bucket_id
+
+  key    = "rest_api/get_templates.zip"
+  source = data.archive_file.lambda_get_templates.output_path
+  etag = filemd5(data.archive_file.lambda_get_templates.output_path)
+}
+
+resource "aws_lambda_function" "get_templates" {
+  function_name = var.lambda_get_templates_name
+  role = aws_iam_role.lambda_get_templates_role.arn
+
+  s3_bucket = var.s3_lambda_rest_bucket_id
+  s3_key    = "rest_api/get_templates.zip"
+
+  handler = "main.lambda_handler"
+  runtime = "python3.8"
+
+  source_code_hash = filebase64sha256("${path.module}/src/functions_rest/get_templates.zip")  # local path from where zip is uploaded to s3
+  depends_on = [data.archive_file.lambda_get_templates, aws_s3_object.lambda_get_templates]
+
+  layers = [aws_lambda_layer_version.rest_responses_layer.arn]
+   ephemeral_storage {
+    size = 10240 # Min 512 MB and the Max 10240 MB
+  }
+
+}
+
+resource "aws_iam_role" "lambda_get_templates_role" {
+  name = "${var.lambda_api_role_name}_s3"
+  assume_role_policy = jsonencode(
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "Service": "lambda.amazonaws.com"
+          },
+          "Effect": "Allow",
+          "Sid": ""
+        }
+      ]
+    })
+}
+
+resource "aws_iam_role_policy" "lambda_s3_get_policy" {
+  name = "s3_policy"
+  role = aws_iam_role.lambda_get_templates_role.id
+
+  policy = jsonencode(
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "logs:*"
+            ],
+            "Resource": "*"
+        },
+  {
+            "Effect": "Allow",
+            "Action": [
+                "s3:*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::portfolio-assets/*/*",
+                "arn:aws:s3:::portfolio-assets",
+                "arn:aws:s3:::portfolio-assets/*"
+
+            ]
+        }
+    ]
+})
+}
+
+resource "aws_lambda_permission" "get-template_api_permission" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.get_templates.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn = "${var.api_gateway_arn}/*/*"
+}
